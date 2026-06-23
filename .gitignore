@@ -1,0 +1,15 @@
+# Experiment outputs and figures
+outputs/
+
+# Persistent-volume working dir when /pvc is not mounted (local fallback)
+.pvc/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# OS / editor
+.DS_Store

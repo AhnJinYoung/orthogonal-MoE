@@ -48,13 +48,24 @@ def build_lm_dataloader(
         max_samples = min(max_samples, len(ds))
         ds = ds.select(range(max_samples))
 
+    streaming = bool(data_cfg.get("streaming", False))
+    # Memory guards for datasets processing: a single worker process (no fork
+    # that duplicates the Arrow buffers) and a small writer batch keep the
+    # resident footprint bounded on RAM-constrained pods.
+    map_num_proc = None if streaming else int(data_cfg.get("map_num_proc", 1) or 1)
+    writer_batch_size = int(data_cfg.get("writer_batch_size", 256))
+    map_batch_size = int(data_cfg.get("map_batch_size", 256))
+
     def tokenize(batch):
         texts = batch[text_column]
         texts = [x if isinstance(x, str) else "" for x in texts]
         return tokenizer(texts, add_special_tokens=False)
 
-    remove_columns = None if data_cfg.get("streaming", False) else list(ds.column_names)
-    tokenized = ds.map(tokenize, batched=True, remove_columns=remove_columns)
+    remove_columns = None if streaming else list(ds.column_names)
+    map_kwargs: Dict[str, Any] = {"batched": True, "remove_columns": remove_columns, "batch_size": map_batch_size}
+    if not streaming:
+        map_kwargs.update({"num_proc": map_num_proc, "writer_batch_size": writer_batch_size, "keep_in_memory": False})
+    tokenized = ds.map(tokenize, **map_kwargs)
 
     def group_texts(examples):
         concatenated = []
@@ -69,18 +80,24 @@ def build_lm_dataloader(
         attention_mask = [[1] * block_size for _ in input_ids]
         return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": [x.copy() for x in input_ids]}
 
-    lm_ds = tokenized.map(group_texts, batched=True)
-    if max_samples is not None and data_cfg.get("streaming", False):
+    group_kwargs: Dict[str, Any] = {"batched": True, "batch_size": map_batch_size}
+    if not streaming:
+        group_kwargs.update({"num_proc": map_num_proc, "writer_batch_size": writer_batch_size, "keep_in_memory": False})
+    lm_ds = tokenized.map(group_texts, **group_kwargs)
+    if max_samples is not None and streaming:
         lm_ds = lm_ds.take(max_samples)
 
     collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    # num_workers>0 forks the parent (model + Arrow buffers) per worker, which
+    # is a frequent OOM source on constrained pods; default to in-process.
+    pin_memory = bool(data_cfg.get("pin_memory", torch.cuda.is_available()))
     return DataLoader(
         lm_ds,
         batch_size=batch_size,
-        shuffle=shuffle and not data_cfg.get("streaming", False),
+        shuffle=shuffle and not streaming,
         collate_fn=collator,
         num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=pin_memory,
     )
 
 

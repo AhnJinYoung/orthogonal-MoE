@@ -3,6 +3,19 @@ seed: 42
 project:
   output_dir: outputs/qwen35_35b_a3b_orthomoe
 
+# CPU/RAM workload constraints to avoid exit code 137 (OOM) during loading.
+resources:
+  num_threads: 4
+  max_cpu_ram_gb: 48
+  cgroup_headroom_fraction: 0.9
+  warn_fraction: 0.85
+  abort_fraction: 0.95
+  set_rlimit_data: false
+  max_gpu_mem_gb: null
+  cpu_weight_fraction: 0.7
+  offload_folder: null
+  offload_state_dict: true
+
 model:
   # Use Qwen/Qwen3.5-35B-A3B for chat/instruction experiments.
   model_id: Qwen/Qwen3.5-35B-A3B-Base
@@ -50,12 +63,20 @@ data:
   block_size: 1024
   max_eval_samples: 256
   max_train_samples: 4096
-  num_workers: 2
+  num_workers: 0
   streaming: false
+  map_num_proc: 1
+  map_batch_size: 256
+  writer_batch_size: 256
+  pin_memory: true
 
 eval:
   batch_size: 1
   max_batches: 64
+  compute_logit_metrics: true
+  logit_chunk_size: 2048
+  logit_sample_cap: 50000
+  logit_sample_stride: 1
 
 training:
   mode: continue_pretrain

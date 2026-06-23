@@ -16,6 +16,7 @@ from .hf_patch import collect_moe_stats
 from .losses import aggregate_aux_losses, reset_aux_losses
 from .mini_moe_model import MiniMoEConfig, MiniMoELM
 from .model_loader import load_model_and_tokenizer, load_tokenizer, prepare_for_training
+from .resources import MemoryGuard, apply_resource_limits, log_memory
 from .utils import append_jsonl, cuda_memory, load_yaml, save_json, set_seed
 
 
@@ -70,6 +71,8 @@ def build_model_for_train(cfg: Dict[str, Any]):
 
 def train(config_path: str, output: str | None = None) -> Path:
     cfg = load_yaml(config_path)
+    apply_resource_limits(cfg)
+    memory_guard = MemoryGuard.from_config(cfg)
     train_cfg = cfg.get("training", {})
     set_seed(int(cfg.get("seed", 42)))
     output_dir = Path(output or train_cfg.get("output_dir") or cfg.get("project", {}).get("output_dir", "outputs/orthomoe_train"))
@@ -129,6 +132,7 @@ def train(config_path: str, output: str | None = None) -> Path:
                     optimizer.zero_grad(set_to_none=True)
                     global_step += 1
                     progress.update(1)
+                    memory_guard.check(f"train:step{global_step}")
 
                     if accelerator.is_main_process and global_step % int(train_cfg.get("log_every", 10)) == 0:
                         stats = collect_moe_stats(model)

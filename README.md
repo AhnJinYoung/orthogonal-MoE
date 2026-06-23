@@ -39,9 +39,13 @@ orthogonal_moe_experiments/
     pretrain_gemma4_from_scratch.yaml
     smoke_tiny_moe.yaml
   scripts/
+    env.sh                # source on every pod: activate PVC venv + caches
+    setup_env.sh          # one-time: create venv on the PVC + install deps
     run_all.sh
     smoke_test.sh
     inspect_model.py
+  k8s/
+    orthomoe-pod.yaml     # example PVC + pod with CPU/RAM limits
   src/orthomoe/
     aggregations.py
     hf_patch.py
@@ -49,6 +53,8 @@ orthogonal_moe_experiments/
     model_loader.py
     data.py
     benchmark.py
+    logit_metrics.py      # memory-safe detailed metrics (PPL, accuracy, entropy, margin)
+    resources.py          # CPU/RAM thread caps, max_memory loading, RAM guard
     visualize.py
     generate.py
     train.py
@@ -57,30 +63,56 @@ orthogonal_moe_experiments/
     test_aggregations.py
 ```
 
-## Installation
+## Installation on an ephemeral pod with a persistent volume (recommended)
 
-Create a fresh environment on the A100 server:
+These experiments run on temporary `kubectl` pods that die frequently but share
+a persistent volume (PVC). To avoid reconfiguring on every restart, the venv,
+the Hugging Face hub/dataset caches, the pip cache and the `device_map` offload
+folder all live under `$ORTHOMOE_PVC` (default `/pvc/orthomoe`).
+
+**One-time, after the PVC is first mounted:**
 
 ```bash
-conda create -n orthomoe python=3.11 -y
-conda activate orthomoe
+export ORTHOMOE_PVC=/pvc/orthomoe          # point at your PVC mount
+# Optional: CUDA-matched torch wheel index for the install
+export TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+bash scripts/setup_env.sh                  # creates venv on the PVC + installs deps
+```
 
-# Install PyTorch for your CUDA stack. Example only:
+**Every time a new pod starts** (seconds, no downloads/installs):
+
+```bash
+export ORTHOMOE_PVC=/pvc/orthomoe
+source scripts/env.sh                       # activates the persisted venv + caches
+```
+
+`scripts/env.sh` exports `HF_HOME`, `HF_HUB_CACHE`, `HF_DATASETS_CACHE`,
+`PIP_CACHE_DIR`, `TORCH_HOME`, `TRITON_CACHE_DIR` and `ORTHOMOE_OFFLOAD` into the
+PVC, activates the venv, and caps CPU threads. `setup_env.sh` is idempotent: it
+hashes `requirements.txt` and skips reinstalling when nothing changed
+(`FORCE=1` reinstalls). `scripts/run_all.sh` auto-runs `setup_env.sh` on the
+first pod if the venv is missing.
+
+If `/pvc` is not mounted, both scripts fall back to a repo-local `.pvc/`
+directory so the same workflow runs on a laptop.
+
+A ready-to-edit pod + PVC manifest is in [`k8s/orthomoe-pod.yaml`](k8s/orthomoe-pod.yaml).
+Keep the container memory limit `>=` the config's `resources.max_cpu_ram_gb`.
+
+If the checkpoint requires access approval:
+
+```bash
+huggingface-cli login                       # token is cached on the PVC
+```
+
+### Plain (non-PVC) install
+
+```bash
+conda create -n orthomoe python=3.11 -y && conda activate orthomoe
 pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision torchaudio
-
 pip install -r requirements.txt
-```
-
-If `transformers>=5.12.0` is not available in your environment, install a source build:
-
-```bash
+# If transformers>=5.12.0 is unavailable:
 pip install -U git+https://github.com/huggingface/transformers.git
-```
-
-Set your Hugging Face token if the checkpoint requires access approval:
-
-```bash
-huggingface-cli login
 ```
 
 ## Run the full inference benchmark
@@ -104,6 +136,7 @@ outputs/gemma4_first_run/
   benchmark/benchmark.jsonl
   benchmark/benchmark.csv
   benchmark/run_config.json
+  benchmark/logit_stats/<variant>.npz   # per-token entropy/margin/nll/top1_prob samples
   figures/*.png
   generations.jsonl
 ```
@@ -131,18 +164,47 @@ python -m orthomoe.visualize \
   --outdir outputs/gemma4_benchmark/figures
 ```
 
-The visualization script produces:
+The visualization script reads `benchmark.jsonl` and the per-variant
+`logit_stats/*.npz` and produces:
 
 ```text
+# quality / efficiency
 perplexity_by_variant.png
+bits_per_token_by_variant.png
 loss_by_variant.png
 throughput_by_variant.png
+peak_memory_by_variant.png
+
+# next-token prediction quality
+token_accuracy_by_variant.png
+top5_accuracy_by_variant.png
+
+# output-logit expressiveness (how the distribution changes)
+pred_entropy_by_variant.png         # predictive entropy in bits
+effective_classes_by_variant.png    # exp(entropy): how many tokens compete
+logit_margin_by_variant.png         # top1 - top2 logit
+top1_prob_by_variant.png            # top-1 softmax confidence
+dist_entropy.png                    # full per-token entropy distribution overlay
+dist_margin.png                     # per-token logit-margin distribution overlay
+dist_top1_prob.png                  # per-token top-1 probability distribution
+dist_nll.png                        # per-token NLL distribution
+
+# MoE geometry + relationships + summaries
 cos_top1_abs_by_variant.png
 novelty_by_variant.png
-peak_memory_by_variant.png
 ppl_vs_cos_top1_abs.png
 ppl_vs_throughput.png
+ppl_vs_entropy.png
+accuracy_vs_margin.png
+expressiveness_delta_vs_standard.png   # grouped relative change vs the standard baseline
+metric_heatmap.png                     # z-scored variant x metric heatmap
 ```
+
+The `dist_*.png` overlays and `expressiveness_delta_vs_standard.png` are the
+direct "how expressive did the model become" views: they show the **full shape**
+of the output distribution per variant, not just the mean. A variant that
+sharpens predictions shifts entropy down and margin/top-1 confidence up; a more
+hedging variant does the opposite.
 
 ## Continue pretraining from a pretrained checkpoint
 
@@ -240,13 +302,30 @@ The controls matter:
 
 ## Metrics logged
 
-`benchmark.csv` includes:
+`benchmark.csv` includes, per variant:
 
 ```text
-loss
-perplexity
+# language-model quality (computed from the output logits, memory-safe streaming)
+loss                 # mean next-token NLL (nats)
+perplexity           # exp(loss)
+bits_per_token       # loss / ln(2)
+token_accuracy       # next-token top-1 accuracy
+top5_accuracy        # next-token top-5 accuracy
+
+# output-logit expressiveness
+pred_entropy         # mean softmax entropy (nats)
+pred_entropy_bits    # mean softmax entropy (bits)
+effective_classes    # exp(entropy): effective vocabulary support
+logit_margin         # mean top1 - top2 logit
+top1_prob            # mean probability on the argmax token
+
+# efficiency
 tokens_per_second
 cuda_peak_allocated_gb
+cuda_allocated_gb
+cuda_reserved_gb
+
+# MoE geometry (from the patched aggregator)
 stat_cos_top1_mean
 stat_cos_top1_abs_mean
 stat_cos_top1_pos_mean
@@ -255,6 +334,10 @@ stat_gate_entropy
 stat_gate_top1_mass
 stat_projection_norm_ratio
 ```
+
+The detailed logit metrics are computed in chunks over the token dimension
+(`eval.logit_chunk_size`) so a full `[tokens, vocab]` softmax is never
+materialised at once. Disable them with `eval.compute_logit_metrics: false`.
 
 Interpretation:
 
@@ -304,6 +387,47 @@ data:
 eval:
   max_batches: 8
 ```
+
+## Avoiding exit code 137 (CPU/RAM OOM kills)
+
+Exit code 137 is a SIGKILL from the kernel OOM-killer, almost always host RAM
+(not VRAM) running out — most often **while loading** the 26B/35B checkpoint or
+while `datasets` tokenizes. Every config now has a `resources:` block that bounds
+the CPU/RAM workload explicitly:
+
+```yaml
+resources:
+  num_threads: 4          # cap BLAS/OpenMP/tokenizer threads (avoids thread-fanout RAM)
+  max_cpu_ram_gb: 48      # host RAM budget; null -> auto-detect cgroup limit * headroom
+  warn_fraction: 0.85     # log a warning when RSS crosses this fraction of the budget
+  abort_fraction: 0.95    # raise a clean MemoryError before the kernel SIGKILLs the pod
+  cpu_weight_fraction: 0.7 # share of the budget usable for weights during loading
+  max_gpu_mem_gb: null    # per-GPU cap for device_map (null -> accelerate decides)
+  offload_folder: null    # null -> $ORTHOMOE_OFFLOAD on the PVC; spills weights to disk
+```
+
+What this does:
+
+1. **Bounded loading.** When a RAM budget is set, `from_pretrained` is given a
+   `max_memory` map plus a disk `offload_folder`, so a checkpoint larger than
+   host RAM streams to disk instead of OOM-killing the pod during load.
+2. **Thread caps.** Pods usually advertise every node core; uncapped BLAS/OpenMP/
+   tokenizer pools each size to that and multiply the resident footprint.
+   `num_threads` (and `scripts/env.sh`) cap them.
+3. **A RAM guard.** `MemoryGuard.check()` runs inside the eval/train loops. When
+   RSS crosses `abort_fraction` of the budget it frees caches and, if still over,
+   raises `MemoryError` with a readable traceback instead of a silent exit 137.
+4. **Memory-safe data.** Defaults are `num_workers: 0` (no forked workers that
+   duplicate RAM), `map_num_proc: 1`, and small `writer_batch_size`. The detailed
+   logit metrics stream in chunks so the vocab-sized softmax never lands in RAM
+   all at once.
+
+If `bash scripts/run_all.sh configs/default_gemma4_26b.yaml gemma4_first_run`
+still gets killed, in order: lower `resources.max_cpu_ram_gb` to match the pod's
+actual limit, set `max_gpu_mem_gb`/`offload_folder` to force disk offload, reduce
+`data.max_eval_samples` / `eval.max_batches` / `data.block_size`, or set
+`model.quantization: {type: 4bit, ...}`. Match the pod's
+`resources.limits.memory` to `max_cpu_ram_gb` (see `k8s/orthomoe-pod.yaml`).
 
 ## Main caveat
 

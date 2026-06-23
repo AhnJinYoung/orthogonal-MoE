@@ -3,6 +3,14 @@ seed: 123
 project:
   output_dir: outputs/gemma4_26b_a4b_scratch_orthomoe
 
+resources:
+  num_threads: 4
+  max_cpu_ram_gb: 48
+  cgroup_headroom_fraction: 0.9
+  warn_fraction: 0.85
+  abort_fraction: 0.95
+  set_rlimit_data: false
+
 model:
   model_id: google/gemma-4-26B-A4B
   init: scratch_from_config
@@ -34,7 +42,9 @@ data:
   eval_split: validation
   block_size: 1024
   max_train_samples: 8192
-  num_workers: 2
+  num_workers: 0
+  map_num_proc: 1
+  writer_batch_size: 256
 
 training:
   mode: scratch_from_config

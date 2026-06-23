@@ -6,6 +6,7 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from .hf_patch import patch_model
+from .resources import build_load_memory_kwargs, log_memory
 from .utils import dtype_from_string
 
 
@@ -37,8 +38,23 @@ def _quantization_config(model_cfg: Dict[str, Any]):
     raise ValueError(f"Unsupported quantization type: {qtype}")
 
 
-def load_hf_causal_lm(model_cfg: Dict[str, Any], *, for_training: bool = False):
-    """Load a HF causal LM. Falls back to AutoModelForMultimodalLM if needed."""
+def load_hf_causal_lm(
+    model_cfg: Dict[str, Any],
+    *,
+    for_training: bool = False,
+    res_cfg: Dict[str, Any] | None = None,
+):
+    """Load a HF causal LM. Falls back to AutoModelForMultimodalLM if needed.
+
+    Args:
+        model_cfg: the ``model`` block of the config.
+        for_training: skip ``device_map`` sharding when preparing for training.
+        res_cfg: optional ``resources`` block. When it specifies a memory
+            budget, a ``max_memory`` map plus disk ``offload_folder`` is passed
+            to ``from_pretrained`` so loading cannot blow past the pod's RAM
+            limit (the common exit-code-137 trigger).
+    """
+    res_cfg = dict(res_cfg or {})
     model_id = model_cfg["model_id"]
     trust_remote_code = bool(model_cfg.get("trust_remote_code", True))
     dtype = dtype_from_string(model_cfg.get("dtype", "bfloat16"))
@@ -57,6 +73,8 @@ def load_hf_causal_lm(model_cfg: Dict[str, Any], *, for_training: bool = False):
         kwargs["quantization_config"] = quant_config
     if not for_training:
         kwargs["device_map"] = model_cfg.get("device_map", "auto")
+        # Bound host RAM during sharded loading and offload overflow to disk.
+        kwargs.update(build_load_memory_kwargs(model_cfg, res_cfg))
 
     init = str(model_cfg.get("init", "pretrained")).lower()
     if init in {"scratch", "scratch_from_config", "from_config"}:
@@ -88,8 +106,11 @@ def load_hf_causal_lm(model_cfg: Dict[str, Any], *, for_training: bool = False):
 
 
 def load_model_and_tokenizer(cfg: Dict[str, Any], *, for_training: bool = False):
+    res_cfg = cfg.get("resources", {}) or {}
     tokenizer = load_tokenizer(cfg["model"])
-    model = load_hf_causal_lm(cfg["model"], for_training=for_training)
+    log_memory("before-load")
+    model = load_hf_causal_lm(cfg["model"], for_training=for_training, res_cfg=res_cfg)
+    log_memory("after-load")
 
     patch_cfg = cfg.get("patch", {})
     if patch_cfg.get("enabled", True):

@@ -8,6 +8,7 @@ import torch
 
 from .hf_patch import set_aggregator
 from .model_loader import load_model_and_tokenizer
+from .resources import apply_resource_limits
 from .utils import append_jsonl, load_yaml, set_seed
 
 
@@ -45,6 +46,7 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     cfg = load_yaml(args.config)
+    apply_resource_limits(cfg)
     set_seed(int(cfg.get("seed", 42)))
     model, tokenizer = load_model_and_tokenizer(cfg, for_training=False)
     prompts = cfg.get("generation", {}).get(

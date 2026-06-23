@@ -3,6 +3,22 @@ seed: 42
 project:
   output_dir: outputs/gemma4_26b_a4b_orthomoe
 
+# CPU/RAM workload constraints. These exist to avoid exit code 137 (OOM SIGKILL)
+# on the temporary pods, which most often happens while loading the 26B
+# checkpoint. Tune max_cpu_ram_gb to your pod's memory request/limit.
+resources:
+  num_threads: 4               # cap BLAS/OpenMP/tokenizer threads (null -> min(4, cores))
+  max_cpu_ram_gb: 48           # host RAM budget; null -> auto-detect cgroup limit * headroom
+  cgroup_headroom_fraction: 0.9
+  warn_fraction: 0.85          # log a warning when RSS crosses this fraction of budget
+  abort_fraction: 0.95         # raise MemoryError (clean traceback) before the kernel OOM-kills
+  set_rlimit_data: false       # optional hard heap cap (RLIMIT_DATA); leave off unless needed
+  # Loading guards: cap weights kept in host RAM and spill the rest to disk.
+  max_gpu_mem_gb: null         # per-GPU cap for device_map; null -> let accelerate decide
+  cpu_weight_fraction: 0.7     # fraction of max_cpu_ram_gb usable for weights during load
+  offload_folder: null         # null -> $ORTHOMOE_PVC/offload (persists on the PVC)
+  offload_state_dict: true
+
 model:
   # Base/pretrained checkpoint. For instruction-tuned qualitative generation,
   # use google/gemma-4-26B-A4B-it instead.
@@ -63,12 +79,20 @@ data:
   block_size: 1024
   max_eval_samples: 256
   max_train_samples: 4096
-  num_workers: 2
+  num_workers: 0               # 0 = in-process; >0 forks workers and duplicates RAM
   streaming: false
+  map_num_proc: 1              # single tokenizer process to bound peak RAM
+  map_batch_size: 256
+  writer_batch_size: 256       # smaller Arrow write batches use less RAM
+  pin_memory: true
 
 eval:
   batch_size: 1
   max_batches: 64
+  compute_logit_metrics: true  # PPL, bits/token, accuracy, entropy, margin, confidence
+  logit_chunk_size: 2048       # tokens per softmax chunk (lower = less peak memory)
+  logit_sample_cap: 50000      # per-token samples retained per variant for distribution plots
+  logit_sample_stride: 1
 
 generation:
   max_new_tokens: 128
