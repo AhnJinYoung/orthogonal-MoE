@@ -1,0 +1,115 @@
+seed: 42
+
+project:
+  output_dir: outputs/gemma4_26b_a4b_orthomoe
+
+model:
+  # Base/pretrained checkpoint. For instruction-tuned qualitative generation,
+  # use google/gemma-4-26B-A4B-it instead.
+  model_id: google/gemma-4-26B-A4B
+  init: pretrained              # pretrained | scratch_from_config
+  dtype: bfloat16
+  trust_remote_code: true
+  low_cpu_mem_usage: true
+  device_map: auto
+  attn_implementation: sdpa     # sdpa is robust; try flash_attention_2 if installed
+  allow_multimodal_fallback: true
+  quantization: null            # {type: 4bit, quant_type: nf4, double_quant: true, compute_dtype: bfloat16}
+
+patch:
+  enabled: true
+  strategy: tensor_experts_auto
+  collect_stats: true
+  module_name_regex: null
+  patch_modulelist_blocks: true
+  aux_ortho_coef: 0.0
+  aux_positive_only: false
+
+aggregation:
+  name: standard
+
+variants:
+  - name: standard
+    aggregation: {name: standard}
+  - name: top1_pos_lam025
+    aggregation: {name: top1_orthogonal, lambda: 0.25, positive_only: true, stop_anchor: true, preserve_norm: false}
+  - name: top1_pos_lam050
+    aggregation: {name: top1_orthogonal, lambda: 0.50, positive_only: true, stop_anchor: true, preserve_norm: false}
+  - name: top1_pos_lam100
+    aggregation: {name: top1_orthogonal, lambda: 1.00, positive_only: true, stop_anchor: true, preserve_norm: false}
+  - name: top1_signed_lam050
+    aggregation: {name: top1_orthogonal, lambda: 0.50, positive_only: false, stop_anchor: true, preserve_norm: false}
+  - name: top1_pos_lam050_renorm
+    aggregation: {name: top1_orthogonal, lambda: 0.50, positive_only: true, stop_anchor: true, preserve_norm: true, max_rescale: 2.0}
+  - name: weighted_sum_projection
+    aggregation: {name: weighted_sum_top1_projection, lambda: 0.50, stop_anchor: true}
+  - name: novelty_gated_alpha1
+    aggregation: {name: novelty_gated, novelty_alpha: 1.0, positive_only: true}
+  - name: gram_schmidt_lam050
+    aggregation: {name: gram_schmidt, lambda: 0.50, positive_only: false, preserve_norm: false}
+  - name: whitening_lam025
+    aggregation: {name: whitening, lambda: 0.25, preserve_norm: true, whitening_shrinkage: 0.001}
+  - name: shrinkage_control_075
+    aggregation: {name: norm_matched_shrinkage, other_scale: 0.75}
+  - name: random_anchor_control
+    aggregation: {name: random_anchor_projection, lambda: 0.50, positive_only: true}
+
+data:
+  dataset_name: wikitext
+  dataset_config_name: wikitext-103-raw-v1
+  text_column: text
+  train_split: train
+  eval_split: validation
+  block_size: 1024
+  max_eval_samples: 256
+  max_train_samples: 4096
+  num_workers: 2
+  streaming: false
+
+eval:
+  batch_size: 1
+  max_batches: 64
+
+generation:
+  max_new_tokens: 128
+  do_sample: false
+  temperature: 0.7
+  top_p: 0.95
+  prompts:
+    - "Explain mixture-of-experts routing in one concise paragraph."
+    - "Give a simple PyTorch implementation of cosine similarity."
+  variants:
+    - name: standard
+      aggregation: {name: standard}
+    - name: top1_pos_lam050
+      aggregation: {name: top1_orthogonal, lambda: 0.50, positive_only: true, stop_anchor: true}
+    - name: novelty_gated_alpha1
+      aggregation: {name: novelty_gated, novelty_alpha: 1.0, positive_only: true}
+
+training:
+  mode: continue_pretrain       # continue_pretrain | scratch_from_config | mini
+  output_dir: outputs/gemma4_26b_a4b_continue_pretrain
+  mixed_precision: bf16
+  gradient_checkpointing: true
+  micro_batch_size: 1
+  gradient_accumulation_steps: 16
+  max_steps: 1000
+  learning_rate: 2.0e-5
+  weight_decay: 0.1
+  warmup_steps: 50
+  lr_scheduler: cosine
+  max_grad_norm: 1.0
+  optimizer: adamw              # adamw | adamw_8bit | paged_adamw_8bit
+  log_every: 10
+  save_every: 500
+
+  # Full 26B optimizer-state pretraining is not realistic on one A100 80GB.
+  # This defaults to LoRA-style continued pretraining for feasibility.
+  use_lora: true
+  prepare_kbit: false
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    bias: none
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]

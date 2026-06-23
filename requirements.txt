@@ -1,0 +1,23 @@
+# Core. Gemma4/Qwen3.5 require a recent Transformers release. If pip cannot
+# resolve >=5.12.0, install from source:
+#   pip install -U git+https://github.com/huggingface/transformers.git
+transformers>=5.12.0
+accelerate>=1.8.0
+datasets>=3.6.0
+peft>=0.15.0
+bitsandbytes>=0.45.0
+sentencepiece>=0.2.0
+protobuf>=5.0.0
+safetensors>=0.5.0
+pyyaml>=6.0.2
+tqdm>=4.66.0
+pandas>=2.2.0
+matplotlib>=3.8.0
+numpy>=1.26.0
+
+# Install PyTorch separately for your CUDA stack if needed. Example for CUDA 12.4:
+#   pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision torchaudio
+# torch>=2.6.0
+
+# Optional A100 speedups. Install only if compatible with your CUDA/PyTorch stack.
+# flash-attn>=2.7.0.post2

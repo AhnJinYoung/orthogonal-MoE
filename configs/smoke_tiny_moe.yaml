@@ -1,0 +1,67 @@
+seed: 7
+
+project:
+  output_dir: outputs/smoke_tiny_moe
+
+model:
+  # Tokenizer only for mini mode. You can replace with any tokenizer.
+  model_id: gpt2
+  dtype: bfloat16
+  trust_remote_code: true
+
+patch:
+  enabled: false
+  collect_stats: true
+  aux_ortho_coef: 0.0
+
+aggregation:
+  name: top1_orthogonal
+  lambda: 0.5
+  positive_only: true
+  stop_anchor: true
+
+variants:
+  - name: standard
+    aggregation: {name: standard}
+  - name: top1_pos_lam050
+    aggregation: {name: top1_orthogonal, lambda: 0.50, positive_only: true, stop_anchor: true}
+  - name: novelty_gated
+    aggregation: {name: novelty_gated, novelty_alpha: 1.0}
+
+data:
+  dataset_name: wikitext
+  dataset_config_name: wikitext-2-raw-v1
+  text_column: text
+  train_split: train
+  eval_split: validation
+  block_size: 128
+  max_train_samples: 512
+  max_eval_samples: 128
+  num_workers: 0
+
+training:
+  mode: mini
+  output_dir: outputs/smoke_tiny_moe_train
+  mixed_precision: bf16
+  micro_batch_size: 4
+  gradient_accumulation_steps: 1
+  max_steps: 20
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  warmup_steps: 2
+  lr_scheduler: linear
+  max_grad_norm: 1.0
+  optimizer: adamw
+  log_every: 1
+  save_every: 20
+  use_lora: false
+  mini:
+    vocab_size: 50257
+    hidden_size: 256
+    intermediate_size: 512
+    num_layers: 2
+    num_heads: 4
+    num_experts: 4
+    top_k: 2
+    max_position_embeddings: 256
+    dropout: 0.0
