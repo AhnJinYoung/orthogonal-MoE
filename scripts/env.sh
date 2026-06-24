@@ -20,13 +20,25 @@ fi
 ORTHOMOE_ROOT="$(cd "${_ORTHOMOE_ENV_DIR}/.." && pwd)"
 export ORTHOMOE_ROOT
 
-# Pick the PVC: explicit override > /pvc (if writable) > repo-local .pvc fallback.
+# Pick the PVC for the venv + caches. Precedence:
+#   1. explicit ORTHOMOE_PVC override
+#   2. the PVC the repo already sits on (e.g. repo under /data -> /data/.orthomoe)
+#   3. /data or /pvc if mounted and writable
+#   4. repo-local .pvc fallback (laptop / no PVC)
 if [ -z "${ORTHOMOE_PVC:-}" ]; then
-  if [ -d /pvc ] && [ -w /pvc ]; then
-    ORTHOMOE_PVC="/pvc/orthomoe"
-  else
-    ORTHOMOE_PVC="${ORTHOMOE_ROOT}/.pvc"
-  fi
+  case "${ORTHOMOE_ROOT}" in
+    /data/*|/data) ORTHOMOE_PVC="/data/.orthomoe" ;;
+    /pvc/*|/pvc)   ORTHOMOE_PVC="/pvc/.orthomoe" ;;
+    *)
+      if [ -d /data ] && [ -w /data ]; then
+        ORTHOMOE_PVC="/data/.orthomoe"
+      elif [ -d /pvc ] && [ -w /pvc ]; then
+        ORTHOMOE_PVC="/pvc/orthomoe"
+      else
+        ORTHOMOE_PVC="${ORTHOMOE_ROOT}/.pvc"
+      fi
+      ;;
+  esac
 fi
 export ORTHOMOE_PVC
 mkdir -p "${ORTHOMOE_PVC}" 2>/dev/null || true

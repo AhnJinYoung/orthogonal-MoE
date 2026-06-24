@@ -35,7 +35,7 @@ aggregation:
   preserve_norm: false
 
 data:
-  dataset_name: wikitext
+  dataset_name: Salesforce/wikitext
   dataset_config_name: wikitext-103-raw-v1
   text_column: text
   train_split: train

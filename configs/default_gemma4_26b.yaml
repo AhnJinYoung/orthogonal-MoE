@@ -71,7 +71,7 @@ variants:
     aggregation: {name: random_anchor_projection, lambda: 0.50, positive_only: true}
 
 data:
-  dataset_name: wikitext
+  dataset_name: Salesforce/wikitext
   dataset_config_name: wikitext-103-raw-v1
   text_column: text
   train_split: train

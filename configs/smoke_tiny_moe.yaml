@@ -29,7 +29,7 @@ variants:
     aggregation: {name: novelty_gated, novelty_alpha: 1.0}
 
 data:
-  dataset_name: wikitext
+  dataset_name: Salesforce/wikitext
   dataset_config_name: wikitext-2-raw-v1
   text_column: text
   train_split: train
