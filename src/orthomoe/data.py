@@ -90,7 +90,9 @@ def build_lm_dataloader(
     collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     # num_workers>0 forks the parent (model + Arrow buffers) per worker, which
     # is a frequent OOM source on constrained pods; default to in-process.
-    pin_memory = bool(data_cfg.get("pin_memory", torch.cuda.is_available()))
+    # Pinned memory only helps host->GPU transfers; force it off without an
+    # accelerator so a CPU-only pod does not emit the "no accelerator" warning.
+    pin_memory = bool(data_cfg.get("pin_memory", torch.cuda.is_available())) and torch.cuda.is_available()
     return DataLoader(
         lm_ds,
         batch_size=batch_size,
