@@ -39,8 +39,10 @@ detect_torch_index_url() {
   echo "https://download.pytorch.org/whl/${tag}"
 }
 
-# True (exit 0) when the installed torch is a CUDA build. Requires an active venv.
-torch_is_cuda_build() { python -c "import torch,sys; sys.exit(0 if torch.version.cuda else 1)" 2>/dev/null; }
+# True (exit 0) when torch can actually use the GPU. Requires an active venv.
+# This catches both a CPU-only torch (version.cuda is None) and a CUDA build
+# compiled for a newer CUDA than the driver supports (cuda.is_available() False).
+torch_cuda_works() { python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; }
 
 # Load PVC paths (env.sh tolerates a missing venv).
 # shellcheck disable=SC1091
@@ -74,12 +76,12 @@ source "${ORTHOMOE_VENV}/bin/activate"
 # torch is also usable on this pod -- a cached CPU-only torch on a GPU box must
 # be rebuilt, not skipped.
 if [ "${FORCE:-0}" != "1" ] && [ -f "${MARKER}" ] && [ "$(cat "${MARKER}")" = "${REQ_HASH}" ]; then
-  if ! gpu_present || torch_is_cuda_build; then
+  if ! gpu_present || torch_cuda_works; then
     echo "[setup] environment already up to date (hash ${REQ_HASH:0:12}). Use FORCE=1 to reinstall."
     python -c "import torch, transformers, datasets; print('[setup] torch', torch.__version__, '| cuda', torch.version.cuda)" 2>/dev/null || true
     exit 0
   fi
-  echo "[setup] cached env has a CPU-only torch but this pod has a GPU; rebuilding torch."
+  echo "[setup] cached torch cannot use this pod's GPU; rebuilding torch."
 fi
 
 python -m pip install --upgrade pip wheel setuptools
@@ -89,8 +91,9 @@ python -m pip install --upgrade pip wheel setuptools
 need_torch_install=0
 if ! python -c "import torch" 2>/dev/null; then
   need_torch_install=1
-elif gpu_present && ! torch_is_cuda_build; then
-  echo "[setup] a CPU-only torch is installed but this pod has a GPU; reinstalling a CUDA build."
+elif gpu_present && ! torch_cuda_works; then
+  echo "[setup] installed torch cannot use the GPU (CPU-only or built for a newer CUDA"
+  echo "[setup]   than the driver supports); reinstalling a driver-matched CUDA build."
   python -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
   need_torch_install=1
 fi
